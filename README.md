@@ -12,6 +12,8 @@ project/
 │   ├── exp3_drift_ablation.py
 │   └── exp4_veracity_leakage.py
 │
+
+
 ├── quantum/
 │   ├── topologies.py
 │   ├── circuits_pde.py
@@ -22,6 +24,8 @@ project/
 │   ├── verification.py
 │   └── features.py
 │
+
+
 ├── data/
 │   ├── builders_boundary.py
 │   ├── builders_scale.py
@@ -29,6 +33,8 @@ project/
 │   ├── builders_drift.py
 │   └── schemas.py
 │
+
+
 ├── analysis/
 │   ├── stats.py
 │   ├── mi.py
@@ -38,6 +44,8 @@ project/
 │   ├── drift.py
 │   └── scaling.py
 │
+
+
 ├── viz/
 │   ├── plots_mi.py
 │   ├── plots_distributions.py
@@ -45,12 +53,16 @@ project/
 │   ├── plots_drift.py
 │   └── plots_scaling.py
 │
+
+
 ├── configs/
 │   ├── exp1_config.py
 │   ├── exp2_config.py
 │   ├── exp3_config.py
 │   └── exp4_config.py
 │
+
+
 ├── outputs/
 ├── config.py
 └── main.py
