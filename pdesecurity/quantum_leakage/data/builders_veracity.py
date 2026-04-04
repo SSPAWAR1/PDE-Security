@@ -1,187 +1,190 @@
 """
-Helpers for operational-feature augmentation and hardware-drift simulation.
+Dataset builders for binary and ordinal veracity / accuracy leakage experiments.
 """
 
 from __future__ import annotations
 
+from typing import Callable, Optional
+
 import numpy as np
 import pandas as pd
+from qiskit import QuantumCircuit
+from qiskit.transpiler import CouplingMap
+
+from .schemas import VeracityDataset
+
+# Assuming you place the default_verify_transpilation_batch in a shared utils file
+from .utils import default_verify_transpilation_batch
 
 
-# ==============================
-# Operational feature augmentation
-# ==============================
-
-def augment_operational_features(df: pd.DataFrame, seed: int) -> pd.DataFrame:
-    """
-    Derive execution-side surrogate features from compiled artefacts.
-
-    These are not semantic features — they represent scheduler / runtime behaviour.
-    """
-    rng = np.random.default_rng(seed)
-    out = df.copy()
-
-    sched = (
-        6.0 * out["routed_depth"].values
-        + 8.0 * out["extra_twoq"].values
-        + rng.normal(0.0, 10.0, len(out))
-    )
-    out["sched_duration_ms"] = np.maximum(1.0, sched)
-
-    idle = (
-        0.015 * out["routed_depth"].values
-        + 0.10 * out["swap_equiv"].values
-        + 0.06 * out["extra_depth"].values
-        + rng.normal(0.0, 0.6, len(out))
-    )
-    out["idle_variance"] = np.maximum(0.0, idle)
-
-    return out
-
-
-# ==============================
-# Hardware drift model
-# ==============================
-
-def apply_hardware_drift(
-    df: pd.DataFrame,
-    severity: float,
-    topology_family: str,
+def build_binary_veracity_dataset(
+    topology_name: str,
+    coupling_map: CouplingMap,
+    workload_families: list[str],
+    n_samples_per_class: int,
     seed: int,
-) -> pd.DataFrame:
+    num_qubits: int,
+    generate_time_evolution_circuit: Callable[[int, float, np.random.Generator], QuantumCircuit],
+    generate_optimization_circuit: Callable[[int, float, np.random.Generator], QuantumCircuit],
+    compile_and_extract_features: Callable[..., dict[str, float | bool]],
+    low_accuracy_value: float = 1e-2,
+    high_accuracy_value: float = 1e-4,
+    verify_batch_fn: Optional[Callable[[pd.DataFrame, str], None]] = None,
+    verify_features: bool = True,
+    optimization_level: int = 1,
+    basis_gates: list[str] | None = None,
+) -> VeracityDataset:
     """
-    Apply physically consistent drift to compiled observables.
-
-    Design principles
-    -----------------
-    - Drift acts on *compiled observables*, not logical labels.
-    - Drift magnitude depends on routing / depth burden.
-    - Derived features are ALWAYS recomputed from primitives.
+    Build dataset for binary accuracy/veracity classification:
+    low-accuracy vs high-accuracy.
     """
-
-    if severity == 0.0:
-        return df.copy()
-
     rng = np.random.default_rng(seed)
-    out = df.copy()
+    rows = []
 
-    topo_gain = 1.10 if topology_family == "line" else 1.00
+    accuracy_specs = [
+        ("low", 0, low_accuracy_value),
+        ("high", 1, high_accuracy_value),
+    ]
 
-    # ------------------------------
-    # Normalised workload loads
-    # ------------------------------
-    route_load = out["extra_twoq"].values / max(out["extra_twoq"].max(), 1.0)
-    depth_load = out["routed_depth"].values / max(out["routed_depth"].max(), 1.0)
-    transpile_load = out["transpile_ms"].values / max(out["transpile_ms"].max(), 1.0)
+    for accuracy_level, label, accuracy_value in accuracy_specs:
+        for family in workload_families:
+            for local_sample_idx in range(n_samples_per_class):
+                logical_seed = int(rng.integers(0, 2**30))
+                transpile_seed = int(rng.integers(0, 2**30))
+                sample_rng = np.random.default_rng(logical_seed)
 
-    # ------------------------------
-    # Drift compiled primitives
-    # ------------------------------
+                instance_id = (
+                    f"veracity_binary_{topology_name}_{family}_{accuracy_level}_"
+                    f"{local_sample_idx:05d}"
+                )
 
-    # Reconstruct routed_twoq if not stored
-    routed_twoq = out.get(
-        "routed_twoq",
-        out["logical_twoq"].values + out["extra_twoq"].values
-    )
+                if family == "time_evolution":
+                    qc = generate_time_evolution_circuit(
+                        num_qubits, accuracy_value, sample_rng
+                    )
+                elif family == "optimization":
+                    qc = generate_optimization_circuit(
+                        num_qubits, accuracy_value, sample_rng
+                    )
+                else:
+                    raise ValueError(f"Unknown workload family: {family}")
 
-    routed_twoq = np.maximum(
-        1.0,
-        routed_twoq * (
-            1.0
-            + topo_gain * severity * (0.20 * route_load)
-            + rng.normal(0.0, 0.06 * severity, len(out))
-        ),
-    )
+                features = compile_and_extract_features(
+                    qc=qc,
+                    coupling_map=coupling_map,
+                    seed=transpile_seed,
+                    basis_gates=basis_gates,
+                    optimization_level=optimization_level,
+                    verify=verify_features,
+                )
 
-    routed_depth = np.maximum(
-        1.0,
-        out["routed_depth"].values * (
-            1.0
-            + topo_gain * severity * (0.10 * route_load + 0.08 * depth_load)
-            + rng.normal(0.0, 0.04 * severity, len(out))
-        ),
-    )
+                # Unpack dictionaries to prevent mutating the upstream return objects
+                row = {
+                    **features,
+                    "task": "veracity_binary",
+                    "task_type": "binary",
+                    "label": label,
+                    "label_name": accuracy_level,
+                    "accuracy_level": accuracy_level,
+                    "accuracy_value": accuracy_value,
+                    "workload_family": family,
+                    "topology": topology_name,
+                    "instance_id": instance_id,
+                    "local_sample_idx": local_sample_idx,
+                    "logical_seed": logical_seed,
+                    "transpile_seed": transpile_seed,
+                    "num_qubits": num_qubits,
+                }
 
-    transpile_ms = np.maximum(
-        1.0,
-        out["transpile_ms"].values * (
-            1.0
-            + topo_gain * severity * (0.20 + 0.10 * transpile_load + 0.10 * route_load)
-            + rng.normal(0.0, 0.10 * severity, len(out))
-        ),
-    )
+                rows.append(row)
 
-    # ------------------------------
-    # Recompute derived quantities
-    # ------------------------------
+    df = pd.DataFrame(rows)
 
-    logical_twoq = np.maximum(out["logical_twoq"].values, 1.0)
-    logical_depth = np.maximum(out["logical_depth"].values, 1.0)
+    if verify_batch_fn is None:
+        verify_batch_fn = default_verify_transpilation_batch
+    verify_batch_fn(df, f"veracity_binary/{topology_name}")
 
-    extra_twoq = np.maximum(0.0, routed_twoq - logical_twoq)
-    extra_depth = np.maximum(0.0, routed_depth - logical_depth)
+    return VeracityDataset(df=df, task_type="binary")
 
-    swap_equiv = extra_twoq / 3.0
 
-    # If routed_total_ops not present → approximate
-    if "routed_total_ops" in out.columns:
-        routed_total_ops = np.maximum(out["routed_total_ops"].values, 1.0)
-    else:
-        routed_total_ops = np.maximum(
-            out["logical_total_ops"].values + extra_twoq + extra_depth,
-            1.0,
-        )
+def build_ordinal_veracity_dataset(
+    topology_name: str,
+    coupling_map: CouplingMap,
+    workload_families: list[str],
+    accuracy_levels: list[float],
+    n_samples_per_level: int,
+    seed: int,
+    num_qubits: int,
+    generate_time_evolution_circuit: Callable[[int, float, np.random.Generator], QuantumCircuit],
+    generate_optimization_circuit: Callable[[int, float, np.random.Generator], QuantumCircuit],
+    compile_and_extract_features: Callable[..., dict[str, float | bool]],
+    verify_batch_fn: Optional[Callable[[pd.DataFrame, str], None]] = None,
+    verify_features: bool = True,
+    optimization_level: int = 1,
+    basis_gates: list[str] | None = None,
+) -> VeracityDataset:
+    """
+    Build dataset for ordinal accuracy/veracity classification:
+    multiple ordered accuracy levels.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
 
-    # ------------------------------
-    # Write back primitives
-    # ------------------------------
+    for label, accuracy in enumerate(accuracy_levels):
+        for family in workload_families:
+            for local_sample_idx in range(n_samples_per_level):
+                logical_seed = int(rng.integers(0, 2**30))
+                transpile_seed = int(rng.integers(0, 2**30))
+                sample_rng = np.random.default_rng(logical_seed)
 
-    out["routed_twoq"] = routed_twoq
-    out["routed_depth"] = routed_depth
-    out["transpile_ms"] = transpile_ms
-    out["extra_twoq"] = extra_twoq
-    out["extra_depth"] = extra_depth
-    out["swap_equiv"] = swap_equiv
+                instance_id = (
+                    f"veracity_ordinal_{topology_name}_{family}_{accuracy:.0e}_"
+                    f"{local_sample_idx:05d}"
+                )
 
-    # ------------------------------
-    # Recompute ALL ratios (clean)
-    # ------------------------------
+                if family == "time_evolution":
+                    qc = generate_time_evolution_circuit(
+                        num_qubits, accuracy, sample_rng
+                    )
+                elif family == "optimization":
+                    qc = generate_optimization_circuit(
+                        num_qubits, accuracy, sample_rng
+                    )
+                else:
+                    raise ValueError(f"Unknown workload family: {family}")
 
-    out["depth_overhead"] = routed_depth / logical_depth
-    out["twoq_overhead"] = routed_twoq / logical_twoq
+                features = compile_and_extract_features(
+                    qc=qc,
+                    coupling_map=coupling_map,
+                    seed=transpile_seed,
+                    basis_gates=basis_gates,
+                    optimization_level=optimization_level,
+                    verify=verify_features,
+                )
 
-    out["swap_fraction"] = np.clip(
-        swap_equiv / np.maximum(routed_twoq, 1.0),
-        0.0,
-        1.0,
-    )
+                # Unpack dictionaries to prevent mutating the upstream return objects
+                row = {
+                    **features,
+                    "task": "veracity_ordinal",
+                    "task_type": "ordinal",
+                    "label": label,
+                    "label_name": f"{accuracy:.0e}",
+                    "accuracy": accuracy,
+                    "workload_family": family,
+                    "topology": topology_name,
+                    "instance_id": instance_id,
+                    "local_sample_idx": local_sample_idx,
+                    "logical_seed": logical_seed,
+                    "transpile_seed": transpile_seed,
+                    "num_qubits": num_qubits,
+                }
 
-    out["cx_fraction"] = np.clip(
-        routed_twoq / routed_total_ops,
-        0.0,
-        1.0,
-    )
+                rows.append(row)
 
-    # ------------------------------
-    # Operational drift (optional)
-    # ------------------------------
+    df = pd.DataFrame(rows)
 
-    if "sched_duration_ms" in out.columns:
-        out["sched_duration_ms"] = np.maximum(
-            1.0,
-            out["sched_duration_ms"].values * (
-                1.0
-                + topo_gain * severity * (0.18 + 0.10 * depth_load)
-                + rng.normal(0.0, 0.08 * severity, len(out))
-            ),
-        )
+    if verify_batch_fn is None:
+        verify_batch_fn = default_verify_transpilation_batch
+    verify_batch_fn(df, f"veracity_ordinal/{topology_name}")
 
-    if "idle_variance" in out.columns:
-        out["idle_variance"] = np.maximum(
-            0.0,
-            out["idle_variance"].values
-            + topo_gain * severity * (0.10 * route_load + 0.08 * depth_load)
-            + rng.normal(0.0, 0.10 * severity, len(out)),
-        )
-
-    return out
+    return VeracityDataset(df=df, task_type="ordinal")
