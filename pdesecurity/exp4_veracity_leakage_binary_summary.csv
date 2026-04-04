@@ -1,5 +1,0 @@
-topology,task,model,macro_f1_mean,bal_acc_mean,depth_mi_bits,extra_twoq_mi_bits
-line,binary,logreg,1.0,1.0,1.0002110026440527,0.5012652592574833
-line,binary,rf,1.0,1.0,1.0002110026440527,0.5012652592574833
-ladder,binary,logreg,1.0,1.0,1.000231040075176,0.01069816349089684
-ladder,binary,rf,1.0,1.0,1.000231040075176,0.01069816349089684
