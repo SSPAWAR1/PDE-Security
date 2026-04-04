@@ -4,10 +4,13 @@ Dataset builders for the boundary-topology leakage experiment.
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+import warnings
+from typing import Callable, Optional, Any
 
 import numpy as np
 import pandas as pd
+from qiskit import QuantumCircuit
+from qiskit.transpiler import CouplingMap
 
 from .schemas import BoundaryDataset
 
@@ -22,7 +25,9 @@ def default_verify_transpilation_batch(df: pd.DataFrame, label: str) -> None:
         return
 
     n_total = len(df)
-    n_passed = int(df["verif_passed"].sum())
+    # Robust handling for mixed bool/NaN types
+    passed_mask = df["verif_passed"] == True
+    n_passed = int(passed_mask.sum())
     n_failed = n_total - n_passed
 
     mean_tvd = float(df["verif_tvd"].mean()) if "verif_tvd" in df.columns else float("nan")
@@ -35,7 +40,6 @@ def default_verify_transpilation_batch(df: pd.DataFrame, label: str) -> None:
     )
 
     if n_failed > 0:
-        import warnings
         warnings.warn(
             f"[{label}] {n_failed}/{n_total} circuits failed verification.",
             RuntimeWarning,
@@ -49,35 +53,16 @@ def build_boundary_dataset(
     n_samples_per_class: int,
     n_steps: int,
     seed: int,
-    make_coupling_map: Callable,
-    generate_pde_surrogate: Callable,
-    compile_and_extract_features: Callable,
+    make_coupling_map: Callable[[int, str], CouplingMap],
+    generate_pde_surrogate: Callable[..., QuantumCircuit],
+    compile_and_extract_features: Callable[..., dict[str, float | bool]],
     verify_batch_fn: Optional[Callable[[pd.DataFrame, str], None]] = None,
+    verify_features: bool = True,
+    optimization_level: int = 1,
+    basis_gates: list[str] | None = None,
 ) -> BoundaryDataset:
     """
     Build a matched Dirichlet/Periodic dataset for boundary-topology inference.
-
-    Parameters
-    ----------
-    topology_family
-        Name of backend topology family, e.g. "line", "ladder".
-    num_qubits
-        Number of logical qubits.
-    n_samples_per_class
-        Number of matched logical seeds to generate.
-    n_steps
-        Number of logical evolution / stencil steps.
-    seed
-        Base RNG seed.
-    make_coupling_map
-        Function that constructs a coupling map from (num_qubits, topology_family)
-        or a topology helper compatible with your project.
-    generate_pde_surrogate
-        Function that builds logical circuits for boundary experiments.
-    compile_and_extract_features
-        Canonical feature extractor.
-    verify_batch_fn
-        Optional batch verification summary function.
     """
     rng = np.random.default_rng(seed)
     rows = []
@@ -89,7 +74,10 @@ def build_boundary_dataset(
         transpile_seed_dir = int(rng.integers(0, 10_000_000))
         transpile_seed_per = int(rng.integers(0, 10_000_000))
 
+        # ID Generation for precise tracking and grouped CV
         pair_id = f"{topology_family}_boundary_pair_{local_sample_idx:05d}"
+        instance_id_dir = f"{pair_id}_dir"
+        instance_id_per = f"{pair_id}_per"
 
         qc_dir = generate_pde_surrogate(
             num_qubits=num_qubits,
@@ -104,37 +92,57 @@ def build_boundary_dataset(
             seed=logical_seed,
         )
 
-        feat_dir = compile_and_extract_features(qc_dir, cmap, transpile_seed_dir)
-        feat_per = compile_and_extract_features(qc_per, cmap, transpile_seed_per)
+        feat_dir = compile_and_extract_features(
+            qc=qc_dir,
+            coupling_map=cmap,
+            seed=transpile_seed_dir,
+            basis_gates=basis_gates,
+            optimization_level=optimization_level,
+            verify=verify_features,
+        )
+        feat_per = compile_and_extract_features(
+            qc=qc_per,
+            coupling_map=cmap,
+            seed=transpile_seed_per,
+            basis_gates=basis_gates,
+            optimization_level=optimization_level,
+            verify=verify_features,
+        )
 
-        feat_dir.update({
+        # Unpack dictionaries to prevent mutating the upstream return objects
+        row_dir = {
+            **feat_dir,
             "task": "boundary",
             "label": 0,
             "label_name": "dirichlet",
             "boundary": "dirichlet",
             "topology_family": topology_family,
             "pair_id": pair_id,
+            "instance_id": instance_id_dir,
             "local_sample_idx": local_sample_idx,
             "logical_seed": logical_seed,
             "transpile_seed": transpile_seed_dir,
             "num_qubits": num_qubits,
             "n_steps": n_steps,
-        })
-        feat_per.update({
+        }
+        
+        row_per = {
+            **feat_per,
             "task": "boundary",
             "label": 1,
             "label_name": "periodic",
             "boundary": "periodic",
             "topology_family": topology_family,
             "pair_id": pair_id,
+            "instance_id": instance_id_per,
             "local_sample_idx": local_sample_idx,
             "logical_seed": logical_seed,
             "transpile_seed": transpile_seed_per,
             "num_qubits": num_qubits,
             "n_steps": n_steps,
-        })
+        }
 
-        rows.extend([feat_dir, feat_per])
+        rows.extend([row_dir, row_per])
 
     df = pd.DataFrame(rows)
 
