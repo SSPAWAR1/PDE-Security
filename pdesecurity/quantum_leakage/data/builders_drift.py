@@ -8,9 +8,15 @@ import numpy as np
 import pandas as pd
 
 
+# ==============================
+# Operational feature augmentation
+# ==============================
+
 def augment_operational_features(df: pd.DataFrame, seed: int) -> pd.DataFrame:
     """
-    Derive operational/provider-facing surrogate features from compiled artefacts.
+    Derive execution-side surrogate features from compiled artefacts.
+
+    These are not semantic features — they represent scheduler / runtime behaviour.
     """
     rng = np.random.default_rng(seed)
     out = df.copy()
@@ -20,7 +26,7 @@ def augment_operational_features(df: pd.DataFrame, seed: int) -> pd.DataFrame:
         + 8.0 * out["extra_twoq"].values
         + rng.normal(0.0, 10.0, len(out))
     )
-    sched = np.maximum(1.0, sched)
+    out["sched_duration_ms"] = np.maximum(1.0, sched)
 
     idle = (
         0.015 * out["routed_depth"].values
@@ -28,12 +34,14 @@ def augment_operational_features(df: pd.DataFrame, seed: int) -> pd.DataFrame:
         + 0.06 * out["extra_depth"].values
         + rng.normal(0.0, 0.6, len(out))
     )
-    idle = np.maximum(0.0, idle)
+    out["idle_variance"] = np.maximum(0.0, idle)
 
-    out["sched_duration_ms"] = sched
-    out["idle_variance"] = idle
     return out
 
+
+# ==============================
+# Hardware drift model
+# ==============================
 
 def apply_hardware_drift(
     df: pd.DataFrame,
@@ -42,20 +50,15 @@ def apply_hardware_drift(
     seed: int,
 ) -> pd.DataFrame:
     """
-    Apply drift to primitive / near-primitive observables first,
-    then recompute derived ratios.
+    Apply physically consistent drift to compiled observables.
 
-    Notes
-    -----
-    This assumes the following columns are present:
-    - swap_equiv
-    - extra_twoq
-    - routed_depth
-    - extra_depth
-    - transpile_ms
-    - logical_depth
-    - logical_twoq
+    Design principles
+    -----------------
+    - Drift acts on *compiled observables*, not logical labels.
+    - Drift magnitude depends on routing / depth burden.
+    - Derived features are ALWAYS recomputed from primitives.
     """
+
     if severity == 0.0:
         return df.copy()
 
@@ -64,66 +67,109 @@ def apply_hardware_drift(
 
     topo_gain = 1.10 if topology_family == "line" else 1.00
 
-    route_load = out["extra_twoq"].values / max(float(out["extra_twoq"].max()), 1.0)
-    depth_load = out["routed_depth"].values / max(float(out["routed_depth"].max()), 1.0)
-    transpile_load = out["transpile_ms"].values / max(float(out["transpile_ms"].max()), 1.0)
+    # ------------------------------
+    # Normalised workload loads
+    # ------------------------------
+    route_load = out["extra_twoq"].values / max(out["extra_twoq"].max(), 1.0)
+    depth_load = out["routed_depth"].values / max(out["routed_depth"].max(), 1.0)
+    transpile_load = out["transpile_ms"].values / max(out["transpile_ms"].max(), 1.0)
 
-    # Drift primitive / near-primitive observables
-    out["swap_equiv"] = np.maximum(
-        0.0,
-        out["swap_equiv"].values
-        * (
-            1.0
-            + topo_gain * severity * (0.18 * route_load)
-            + rng.normal(0.0, 0.05 * severity, len(out))
-        ),
+    # ------------------------------
+    # Drift compiled primitives
+    # ------------------------------
+
+    # Reconstruct routed_twoq if not stored
+    routed_twoq = out.get(
+        "routed_twoq",
+        out["logical_twoq"].values + out["extra_twoq"].values
     )
 
-    out["extra_twoq"] = np.maximum(
-        0.0,
-        out["extra_twoq"].values
-        * (
+    routed_twoq = np.maximum(
+        1.0,
+        routed_twoq * (
             1.0
             + topo_gain * severity * (0.20 * route_load)
             + rng.normal(0.0, 0.06 * severity, len(out))
         ),
     )
 
-    out["routed_depth"] = np.maximum(
+    routed_depth = np.maximum(
         1.0,
-        out["routed_depth"].values
-        * (
+        out["routed_depth"].values * (
             1.0
             + topo_gain * severity * (0.10 * route_load + 0.08 * depth_load)
             + rng.normal(0.0, 0.04 * severity, len(out))
         ),
     )
 
-    out["extra_depth"] = np.maximum(
-        0.0,
-        out["extra_depth"].values
-        * (
-            1.0
-            + topo_gain * severity * (0.15 * depth_load)
-            + rng.normal(0.0, 0.06 * severity, len(out))
-        ),
-    )
-
-    out["transpile_ms"] = np.maximum(
+    transpile_ms = np.maximum(
         1.0,
-        out["transpile_ms"].values
-        * (
+        out["transpile_ms"].values * (
             1.0
             + topo_gain * severity * (0.20 + 0.10 * transpile_load + 0.10 * route_load)
             + rng.normal(0.0, 0.10 * severity, len(out))
         ),
     )
 
+    # ------------------------------
+    # Recompute derived quantities
+    # ------------------------------
+
+    logical_twoq = np.maximum(out["logical_twoq"].values, 1.0)
+    logical_depth = np.maximum(out["logical_depth"].values, 1.0)
+
+    extra_twoq = np.maximum(0.0, routed_twoq - logical_twoq)
+    extra_depth = np.maximum(0.0, routed_depth - logical_depth)
+
+    swap_equiv = extra_twoq / 3.0
+
+    # If routed_total_ops not present → approximate
+    if "routed_total_ops" in out.columns:
+        routed_total_ops = np.maximum(out["routed_total_ops"].values, 1.0)
+    else:
+        routed_total_ops = np.maximum(
+            out["logical_total_ops"].values + extra_twoq + extra_depth,
+            1.0,
+        )
+
+    # ------------------------------
+    # Write back primitives
+    # ------------------------------
+
+    out["routed_twoq"] = routed_twoq
+    out["routed_depth"] = routed_depth
+    out["transpile_ms"] = transpile_ms
+    out["extra_twoq"] = extra_twoq
+    out["extra_depth"] = extra_depth
+    out["swap_equiv"] = swap_equiv
+
+    # ------------------------------
+    # Recompute ALL ratios (clean)
+    # ------------------------------
+
+    out["depth_overhead"] = routed_depth / logical_depth
+    out["twoq_overhead"] = routed_twoq / logical_twoq
+
+    out["swap_fraction"] = np.clip(
+        swap_equiv / np.maximum(routed_twoq, 1.0),
+        0.0,
+        1.0,
+    )
+
+    out["cx_fraction"] = np.clip(
+        routed_twoq / routed_total_ops,
+        0.0,
+        1.0,
+    )
+
+    # ------------------------------
+    # Operational drift (optional)
+    # ------------------------------
+
     if "sched_duration_ms" in out.columns:
         out["sched_duration_ms"] = np.maximum(
             1.0,
-            out["sched_duration_ms"].values
-            * (
+            out["sched_duration_ms"].values * (
                 1.0
                 + topo_gain * severity * (0.18 + 0.10 * depth_load)
                 + rng.normal(0.0, 0.08 * severity, len(out))
@@ -137,23 +183,5 @@ def apply_hardware_drift(
             + topo_gain * severity * (0.10 * route_load + 0.08 * depth_load)
             + rng.normal(0.0, 0.10 * severity, len(out)),
         )
-
-    # Recompute derived features
-    logical_depth = np.maximum(out["logical_depth"].values, 1.0)
-    logical_twoq = np.maximum(out["logical_twoq"].values, 1.0)
-
-    out["depth_overhead"] = out["routed_depth"].values / logical_depth
-    out["twoq_overhead"] = (out["extra_twoq"].values + out["logical_twoq"].values) / logical_twoq
-
-    # Approximate recomputation for ratios
-    routed_twoq = out["extra_twoq"].values + out["logical_twoq"].values
-    out["swap_fraction"] = np.clip(out["swap_equiv"].values / np.maximum(routed_twoq, 1.0), 0.0, 1.0)
-
-    if "logical_total_ops" in out.columns:
-        approx_total_ops = np.maximum(
-            out["logical_total_ops"].values + out["extra_twoq"].values + out["extra_depth"].values,
-            1.0,
-        )
-        out["cx_fraction"] = np.clip(routed_twoq / approx_total_ops, 0.0, 1.0)
 
     return out
