@@ -5,7 +5,7 @@ Shared dataset schemas and small data-container classes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal
 
 import pandas as pd
 
@@ -16,7 +16,7 @@ class ExperimentDataset:
     Generic dataset container for a single tabular dataset.
     """
     df: pd.DataFrame
-    task_type: Optional[str] = None
+    task_type: str | None = None
 
 
 @dataclass
@@ -41,7 +41,7 @@ class VeracityDataset:
     Accuracy/veracity leakage dataset.
     """
     df: pd.DataFrame
-    task_type: str  # "binary" or "ordinal"
+    task_type: Literal["binary", "ordinal"]
 
 
 @dataclass
