@@ -1,9 +1,0 @@
-topology,task,train_family,test_family,model,macro_f1,class_mae,adjacent_acc
-line,ordinal,optimization,time_evolution,logreg,0.1,1.0,0.75
-line,ordinal,optimization,time_evolution,rf,0.31400255399478094,1.005,0.665
-line,ordinal,time_evolution,optimization,logreg,0.1,1.5,0.5
-line,ordinal,time_evolution,optimization,rf,0.1,1.5,0.5
-ladder,ordinal,optimization,time_evolution,logreg,0.1,1.0,0.75
-ladder,ordinal,optimization,time_evolution,rf,0.375,0.75,0.75
-ladder,ordinal,time_evolution,optimization,logreg,0.1,1.5,0.5
-ladder,ordinal,time_evolution,optimization,rf,0.1,1.5,0.5
