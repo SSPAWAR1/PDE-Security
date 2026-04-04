@@ -6,23 +6,28 @@ If I had to give you the top 5 priorities
 5.	Add execution-side/noise-derived observables
 
 project/
+
 ├── experiments/
+
 │   ├── exp1.py
 │   ├── exp2.py
 │   ├── exp3.py
 │   └── exp4.py
 ├── quantum/
+
 │   ├── topologies.py
 │   ├── circuits.py
 │   ├── controls.py
 │   ├── transpilation.py
 │   └── features.py
 ├── analysis/
+
 │   ├── stats.py
 │   ├── mi.py
 │   ├── classifiers.py
 │   └── paired_tests.py
 ├── viz/
+
 │   └── plots.py
 ├── data/
 │   └── builders.py
