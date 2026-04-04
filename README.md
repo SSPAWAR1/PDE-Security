@@ -6,30 +6,51 @@ If I had to give you the top 5 priorities
 5.	Add execution-side/noise-derived observables
 
 project/
-
 ├── experiments/
-
-│   ├── exp1.py
-│   ├── exp2.py
-│   ├── exp3.py
-│   └── exp4.py
+│   ├── exp1_boundary_topology.py
+│   ├── exp2_scale_leakage.py
+│   ├── exp3_drift_ablation.py
+│   └── exp4_veracity_leakage.py
+│
 ├── quantum/
-
 │   ├── topologies.py
-│   ├── circuits.py
+│   ├── circuits_pde.py
+│   ├── circuits_scale.py
+│   ├── circuits_veracity.py
 │   ├── controls.py
 │   ├── transpilation.py
+│   ├── verification.py
 │   └── features.py
+│
+├── data/
+│   ├── builders_boundary.py
+│   ├── builders_scale.py
+│   ├── builders_veracity.py
+│   ├── builders_drift.py
+│   └── schemas.py
+│
 ├── analysis/
-
 │   ├── stats.py
 │   ├── mi.py
 │   ├── classifiers.py
-│   └── paired_tests.py
+│   ├── ordinal.py
+│   ├── paired_tests.py
+│   ├── drift.py
+│   └── scaling.py
+│
 ├── viz/
-
-│   └── plots.py
-├── data/
-│   └── builders.py
+│   ├── plots_mi.py
+│   ├── plots_distributions.py
+│   ├── plots_confusion.py
+│   ├── plots_drift.py
+│   └── plots_scaling.py
+│
+├── configs/
+│   ├── exp1_config.py
+│   ├── exp2_config.py
+│   ├── exp3_config.py
+│   └── exp4_config.py
+│
+├── outputs/
 ├── config.py
 └── main.py
