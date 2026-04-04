@@ -12,6 +12,20 @@ from .transpilation import transpile_circuit
 from .verification import verify_transpilation
 
 
+def count_two_qubit_ops(qc: QuantumCircuit) -> int:
+    """
+    Count strictly two-qubit operations in a circuit.
+    """
+    return sum(1 for inst, qargs, _ in qc.data if len(qargs) == 2)
+
+
+def count_total_ops(qc: QuantumCircuit) -> int:
+    """
+    Count total operations excluding barriers.
+    """
+    return sum(1 for inst, _, _ in qc.data if inst.name not in {"barrier"})
+
+
 def compile_and_extract_features(
     qc: QuantumCircuit,
     coupling_map: CouplingMap,
@@ -32,10 +46,10 @@ def compile_and_extract_features(
       because routing overhead is often decomposed into CXs rather than explicit SWAPs.
     - Ratio features are derived from primitive logical/compiled counts.
     """
-    # Use Qiskit's highly optimized native counting methods (O(1) or fast Rust backend)
+    # Explicit counting for research transparency
     logical_depth = float(qc.depth())
-    logical_twoq = float(qc.num_nonlocal_gates())
-    logical_total_ops = float(qc.size())
+    logical_twoq = float(count_two_qubit_ops(qc))
+    logical_total_ops = float(count_total_ops(qc))
 
     result = transpile_circuit(
         qc=qc,
@@ -62,8 +76,8 @@ def compile_and_extract_features(
         verif_passed = bool(verif["passed"])
 
     routed_depth = float(tqc.depth())
-    routed_twoq = float(tqc.num_nonlocal_gates())
-    routed_total_ops = float(tqc.size())
+    routed_twoq = float(count_two_qubit_ops(tqc))
+    routed_total_ops = float(count_total_ops(tqc))
 
     # Raw deltas for diagnostics
     raw_delta_twoq = routed_twoq - logical_twoq
